@@ -241,9 +241,14 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
       return msg.includes("appleevent timed out") || msg.includes("timeout");
     }
 
-    // Main loop with global retry per photo
+    let cursor = 0;
+
+    // Main loop with global retry per photo.
+    // cursor only advances when the item stays in the album (skipped/failed);
+    // on success, setExported removes the item from the smart album so the
+    // next item slides into the same index — cursor must not advance.
     for (let i = 0; i < total; i++) {
-      const photo    = theAlbum.mediaItems.at(i);
+      const photo    = theAlbum.mediaItems.at(cursor);
       const filename = photo.filename();
       const prefix   = `[${i + 1}/${total}] ${filename}`;
 
@@ -251,6 +256,7 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
 
       let retryAttempt = 0;
       let success = false;
+      let advanceCursor = true; // default: item stays in album (skip / fail)
 
       while (retryAttempt < 3 && !success) {
         try {
@@ -301,6 +307,7 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
           const elapsed = ((Date.now() - startMs) / 1000).toFixed(1);
           ok(`${prefix}  →  done in ${elapsed}s`);
           processed++;
+          advanceCursor = false; // item left the smart album after setExported
           success = true; // Exit retry loop
 
         } catch (e) {
@@ -348,6 +355,7 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
         }
       }
 
+      if (advanceCursor) cursor++;
       sep();
     }
 
