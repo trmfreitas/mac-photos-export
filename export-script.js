@@ -226,8 +226,7 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
     fail(`Album not found: "${ALBUM_NAME}"`);
   } else {
     const theAlbum = albums[0];
-    const photos   = theAlbum.mediaItems();
-    const total    = photos.length;
+    const total    = theAlbum.mediaItems().length;
     info(`Found ${total} item(s) in album "${ALBUM_NAME}"`);
     sep();
 
@@ -236,68 +235,117 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
     let failed    = 0;
     let step      = "";
 
+    // Helper to detect AppleEvent timeout errors
+    function isAppleEventTimeout(e) {
+      const msg = (e.message || String(e)).toLowerCase();
+      return msg.includes("appleevent timed out") || msg.includes("timeout");
+    }
+
+    // Main loop with global retry per photo
     for (let i = 0; i < total; i++) {
-      const photo    = photos[i];
+      const photo    = theAlbum.mediaItems.at(i);
       const filename = photo.filename();
       const prefix   = `[${i + 1}/${total}] ${filename}`;
 
       log(prefix);
 
-      try {
-        const startMs   = Date.now();
-        const albumName = getAlbumForPhoto(photo);
+      let retryAttempt = 0;
+      let success = false;
 
-        if (albumName === "") {
-          warn(`${prefix}  →  no album keyword (a:...), skipping`);
-          skipped++;
-          sep();
-          continue;
-        }
-
-        info(`${prefix}  →  album: ${albumName}`);
-
-        step = "export originals + rendered";
-        info(`${prefix}  →  exporting from Photos…`);
-        doExport(photo);
-
-        step = "detect processed file";
-        const processedFilename = getProcessedFilename(filename);
-        if (processedFilename === "") {
-          throw new Error("No rendered file found in tmp_processed after export");
-        }
-
-        step = "extract XMP sidecar";
-        info(`${prefix}  →  extracting XMP from ${processedFilename}…`);
-        takeXmp(filename, processedFilename);
-
-        step = "move to export directory";
-        info(`${prefix}  →  moving to export directory…`);
-        finalize(photo, albumName, filename);
-
-        step = "mark exported";
-        setExported(photo);
-
-        step = "verify temp folders empty";
-        if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
-          throw new Error("Temp folders still contain files after finalize — possible leftover");
-        }
-
-        const elapsed = ((Date.now() - startMs) / 1000).toFixed(1);
-        ok(`${prefix}  →  done in ${elapsed}s`);
-        processed++;
-
-      } catch (e) {
-        fail(`${prefix}  →  FAILED at [${step}]: ${e.message}`);
+      while (retryAttempt < 3 && !success) {
         try {
-          markFailed(photo);
-          warn(`${prefix}  →  archiving temp folders for inspection…`);
-          archiveTempFolders();
-        } catch (archiveErr) {
-          fail(`Could not archive temp folders: ${archiveErr.message}`);
-          fail("Halting to prevent further data corruption.");
-          break;
+          const startMs   = Date.now();
+          const albumName = getAlbumForPhoto(photo);
+
+          if (albumName === "") {
+            warn(`${prefix}  →  no album keyword (a:...), skipping`);
+            skipped++;
+            success = true; // Exit retry loop, move to next photo
+            break;
+          }
+
+          if (retryAttempt === 0) {
+            info(`${prefix}  →  album: ${albumName}`);
+          }
+
+          step = "export originals + rendered";
+          if (retryAttempt === 0) {
+            info(`${prefix}  →  exporting from Photos…`);
+          } else {
+            warn(`${prefix}  →  retry ${retryAttempt}/3 — exporting from Photos…`);
+          }
+          doExport(photo);
+
+          step = "detect processed file";
+          const processedFilename = getProcessedFilename(filename);
+          if (processedFilename === "") {
+            throw new Error("No rendered file found in tmp_processed after export");
+          }
+
+          step = "extract XMP sidecar";
+          info(`${prefix}  →  extracting XMP from ${processedFilename}…`);
+          takeXmp(filename, processedFilename);
+
+          step = "move to export directory";
+          info(`${prefix}  →  moving to export directory…`);
+          finalize(photo, albumName, filename);
+
+          step = "mark exported";
+          setExported(photo);
+
+          step = "verify temp folders empty";
+          if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
+            throw new Error("Temp folders still contain files after finalize — possible leftover");
+          }
+
+          const elapsed = ((Date.now() - startMs) / 1000).toFixed(1);
+          ok(`${prefix}  →  done in ${elapsed}s`);
+          processed++;
+          success = true; // Exit retry loop
+
+        } catch (e) {
+          const errorMsg = e.message || String(e);
+          const isTimeout = isAppleEventTimeout(e);
+
+          if (isTimeout && retryAttempt < 2) {
+            fail(`${prefix}  →  FAILED at [${step}]: ${errorMsg}`);
+            warn(`${prefix}  →  AppleEvent timeout — cleaning temp folders and retrying (${retryAttempt + 1}/3)…`);
+            
+            try {
+              // Clean temp folders for next attempt
+              shell(`find ${q(DIR_TMP_ORIG)} -maxdepth 1 -type f ! -name '.DS_Store' -delete 2>/dev/null || true`);
+              shell(`find ${q(DIR_TMP_PROCESSED)} -maxdepth 1 -type f ! -name '.DS_Store' -delete 2>/dev/null || true`);
+              shell("sleep 3"); // Wait before retry
+            } catch (cleanErr) {
+              fail(`${prefix}  →  error cleaning temp folders: ${cleanErr.message}`);
+              fail("Halting to prevent further data corruption.");
+              success = true; // Force exit retry loop
+              break;
+            }
+
+            retryAttempt++;
+          } else {
+            // Either not a timeout, or exhausted retries
+            if (isTimeout && retryAttempt >= 2) {
+              fail(`${prefix}  →  FAILED at [${step}]: ${errorMsg} (after 3 attempts)`);
+            } else {
+              fail(`${prefix}  →  FAILED at [${step}]: ${errorMsg}`);
+            }
+
+            try {
+              markFailed(photo);
+              warn(`${prefix}  →  archiving temp folders for inspection…`);
+              archiveTempFolders();
+            } catch (archiveErr) {
+              fail(`Could not archive temp folders: ${archiveErr.message}`);
+              fail("Halting to prevent further data corruption.");
+              break;
+            }
+
+            failed++;
+            success = true; // Exit retry loop, move to next photo
+          }
         }
-        failed++;
       }
 
       sep();
