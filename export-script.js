@@ -52,10 +52,9 @@ function q(str) {
  * Executes a shell command via osascript's StandardAdditions.
  * Throws on non-zero exit (JXA surfaces this automatically as an Error).
  *
- * NOTE — JXA timeouts: Unlike AppleScript there is no `with timeout` block
- * in JXA. app.export() sends an Apple Event to Photos and can block the
- * interpreter indefinitely if Photos stalls. The shell launcher (run.sh)
- * wraps this script with a wall-clock `timeout` as the only safety net.
+ * NOTE — AppleEvent timeouts: doExport() uses AppleScript with a 3600s
+ * timeout block, so export operations won't hit the 2-minute JXA default.
+ * Other AppleEvent calls (keywords, etc.) still use the system default.
  */
 function shell(cmd) {
   return sys.doShellScript(cmd);
@@ -171,15 +170,32 @@ function finalize(photo, albumName, filename) {
 }
 
 /**
- * Exports one photo twice via the Photos app:
+ * Exports one photo twice via AppleScript with a 1-hour timeout.
+ * Passes the photo id from JXA; AppleScript looks it up and exports.
  *   1. Original file  → DIR_TMP_ORIG
  *   2. Rendered JPEG  → DIR_TMP_PROCESSED
- *
- * See the JXA timeout note on shell() above.
  */
 function doExport(photo) {
-  app.export([photo], { to: Path(DIR_TMP_ORIG),      usingOriginals: true  });
-  app.export([photo], { to: Path(DIR_TMP_PROCESSED), usingOriginals: false });
+  const photoId = photo.id();
+  const script = [
+    'on run argv',
+    '  set photoId to item 1 of argv',
+    '  with timeout of 3600 seconds',
+    '    tell application "Photos"',
+    '      try',
+    '        set p to first media item whose id is photoId',
+    '        set step to "export originals"',
+    `        export {p} to ("${DIR_TMP_ORIG}" as POSIX file) with using originals`,
+    '        set step to "export rendered"',
+    `        export {p} to ("${DIR_TMP_PROCESSED}" as POSIX file) without using originals`,
+    '      on error errMsg',
+    '        error "doExport [" & step & "]: " & errMsg',
+    '      end try',
+    '    end tell',
+    '  end timeout',
+    'end run',
+  ].join('\n');
+  shell(`osascript -l AppleScript -e ${q(script)} ${q(photoId)}`);
 }
 
 /**
