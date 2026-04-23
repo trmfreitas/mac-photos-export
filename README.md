@@ -33,7 +33,13 @@ This gives you:
 ### Album convention
 
 The script only processes photos that are members of one specific album
-(configured as `ALBUM_NAME = "SYS-NotExported"`).
+(configured via `ALBUM_NAME`). The value can be either a plain album name or a
+**folder-qualified path** using `/` as a separator:
+
+| `ALBUM_NAME` value | Resolves to |
+|---|---|
+| `SYS-NotExported` | Album named `SYS-NotExported` at any level |
+| `Smart/SYS-NotExported` | Album named `SYS-NotExported` inside the `Smart` folder |
 
 Each photo must also have a keyword of the form `a:<folder>` to specify which
 sub-folder inside the export root it should land in:
@@ -43,7 +49,9 @@ sub-folder inside the export root it should land in:
 | `a:Holidays` | `…/exported/Holidays/` |
 | `a:Family/2025` | `…/exported/Family/2025/` |
 
-Photos without an `a:` keyword are skipped (logged as a warning).
+Photos without an `a:` keyword are **skipped** by default. If
+`EXPORT_USING_DATE_AS_FOLDER_IF_KEYWORD_NOT_AVAILABLE=true`, they are exported
+to a `YYYY/MM` sub-folder derived from the photo's capture date instead.
 
 ---
 
@@ -54,22 +62,28 @@ Photos album "SYS-NotExported"
         │
         ▼ for each photo
 ┌─────────────────────────────────────────────────────┐
+│ 0. Skip check                                       │
+│    └─ if "skipExport" keyword → skip entirely       │
+│                                                     │
 │ 1. doExport()                                       │
 │    ├─ export original   → tmp_orig/                 │
 │    └─ export rendered   → tmp_processed/            │
+│       (skipped for originals-only extensions)       │
 │                                                     │
 │ 2. getProcessedFilename()                           │
 │    └─ locate the rendered file (HEIC→JPEG aware)    │
+│       → if missing and originals-only ext: skip XMP │
 │                                                     │
-│ 3. takeXmp()                                        │
+│ 3. takeXmp()  [skipped for originals-only files]    │
 │    ├─ exiftool: extract all tags → origname.xmp     │
 │    └─ delete the rendered copy                      │
 │                                                     │
-│ 4. finalize()                                       │
+│ 4. finalize() / finalizeOriginalsOnly()             │
 │    ├─ mkdir -p exported/<album>/                    │
 │    ├─ move originals  → exported/<album>/<epoch>_*  │
 │    ├─ move XMP sidecar→ exported/<album>/<epoch>_*.xmp│
-│    └─ exiftool: set FileModifyDate from XMP date    │
+│    │  (XMP skipped for originals-only files)        │
+│    └─ exiftool: set FileModifyDate from capture date│
 │                                                     │
 │ 5. setExported()                                    │
 │    └─ add keyword "exportedT" in Photos             │
@@ -164,7 +178,16 @@ Examples:
 | `a:Family/2025` | `…/exported/Family/2025/` |
 
 Photos without an `a:` keyword are **skipped** (logged as a warning) and left
-in the `SYS-NotExported` album for the next run.
+in the `SYS-NotExported` album for the next run, unless
+`EXPORT_USING_DATE_AS_FOLDER_IF_KEYWORD_NOT_AVAILABLE=true` is set — in that
+case they are exported to `YYYY/MM/` automatically.
+
+### 3. Skip keyword — `skipExport`
+
+Tag any photo with the `skipExport` keyword (configurable via `KEYWORD_SKIP`)
+to exclude it from every export run. The photo will never be marked
+`exportedT` or `exportFailed`; it simply stays in the source album and is
+logged as skipped.
 
 ---
 
@@ -193,10 +216,13 @@ cp .env.template .env
 | `DIR_TMP_ORIG` | `/Volumes/S3 1TB/exported/tmp_orig` | Temp folder for original exports |
 | `DIR_TMP_PROCESSED` | `/Volumes/S3 1TB/exported/tmp_processed` | Temp folder for rendered exports |
 | `DIR_EXPORT` | `/Volumes/S3 1TB/exported` | Final export root |
-| `ALBUM_NAME` | `SYS-NotExported` | Smart album to read photos from |
+| `ALBUM_NAME` | `SYS-NotExported` | Album to read photos from; supports folder paths like `Smart/SYS-NotExported` |
 | `EXIFTOOL` | `/opt/homebrew/bin/exiftool` | Path to ExifTool binary |
 | `KEYWORD_EXPORTED` | `exportedT` | Keyword added to a photo after successful export |
 | `KEYWORD_FAILED` | `exportFailed` | Keyword added to a photo when export fails |
+| `KEYWORD_SKIP` | `skipExport` | Photos with this keyword are skipped entirely |
+| `ORIGINALS_ONLY_EXTS` | `.ARW` | Comma-separated extensions that have no rendered copy (e.g. `.ARW,.RAF,.NEF`); exported as original-only without an XMP sidecar |
+| `EXPORT_USING_DATE_AS_FOLDER_IF_KEYWORD_NOT_AVAILABLE` | `false` | When `true`, photos without an `a:` keyword are exported to `YYYY/MM/` instead of being skipped |
 | `TIMEOUT_SECS` | `21600` | Wall-clock timeout in seconds (`0` = no limit); overridden by `--timeout N` |
 
 > **Note:** if you change `KEYWORD_EXPORTED`, update the Smart Album rule in Photos to match.
@@ -262,8 +288,9 @@ A plain-text copy (no escape codes) is saved to `logs/export_YYYYMMDD_HHMMSS.log
 | Keyword | Set by | Configurable via | Meaning |
 |---|---|---|---|
 | `a:<name>` | You | — | Destination sub-folder for this photo |
-| `exportedT` | Script | `KEYWORD_EXPORTED` in `.env` | Photo was successfully exported |
-| `exportFailed` | Script | `KEYWORD_FAILED` in `.env` | Export failed; see error archive for leftover files |
+| `exportedT` | Script | `KEYWORD_EXPORTED` | Photo was successfully exported |
+| `exportFailed` | Script | `KEYWORD_FAILED` | Export failed; see error archive for leftover files |
+| `skipExport` | You | `KEYWORD_SKIP` | Photo is excluded from all export runs |
 
 ---
 

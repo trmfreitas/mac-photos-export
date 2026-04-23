@@ -14,6 +14,10 @@ const ALBUM_NAME        = env("ALBUM_NAME")        || "SYS-NotExported";
 const EXIFTOOL          = env("EXIFTOOL")          || "/opt/homebrew/bin/exiftool";
 const KEYWORD_EXPORTED  = env("KEYWORD_EXPORTED")  || "exportedT";
 const KEYWORD_FAILED    = env("KEYWORD_FAILED")    || "exportFailed";
+const KEYWORD_SKIP      = env("KEYWORD_SKIP")      || "skipExport";
+// When enabled ("true"), photos without an a: keyword are exported to year/month folders
+const EXPORT_USING_DATE_AS_FOLDER_IF_KEYWORD_NOT_AVAILABLE =
+  (env("EXPORT_USING_DATE_AS_FOLDER_IF_KEYWORD_NOT_AVAILABLE") || "false").toLowerCase() === "true";
 // Comma-separated list of extensions that can only be exported as originals
 // (no rendered file will be produced). E.g. ".ARW,.RAF"
 const ORIGINALS_ONLY_EXTS = (env("ORIGINALS_ONLY_EXTS") || ".ARW")
@@ -108,6 +112,21 @@ function getAlbumForPhoto(photo) {
     if (k.startsWith("a:")) return k.slice(2);
   }
   return "";
+}
+
+/**
+ * Returns a "YYYY/MM" folder string derived from the photo's date property.
+ * Falls back to unknown folder if photo has no date or an invalid date.
+ */
+function getDateFolder(photo) {
+  let d;
+  try { d = photo.date(); } catch (_) { d = null; }
+  if (!(d instanceof Date) || isNaN(d.getTime())) d = null;
+  if (d === null) return "unknown";
+
+  const year  = d.getFullYear().toString();
+  const month = (d.getMonth() + 1).toString().padStart(2, "0");
+  return `${year}/${month}`;
 }
 
 /**
@@ -336,6 +355,15 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
 
       log(prefix);
 
+      // Skip photos tagged with KEYWORD_SKIP
+      if (photo.keywords().includes(KEYWORD_SKIP)) {
+        warn(`${prefix}  →  has "${KEYWORD_SKIP}" tag, skipping`);
+        skipped++;
+        cursor++;
+        sep();
+        continue;
+      }
+
       let retryAttempt = 0;
       let success = false;
       let advanceCursor = true; // default: item stays in album (skip / fail)
@@ -343,16 +371,18 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
       while (retryAttempt < 3 && !success) {
         try {
           const startMs   = Date.now();
-          const albumName = getAlbumForPhoto(photo);
+          let albumName = getAlbumForPhoto(photo);
 
           if (albumName === "") {
-            warn(`${prefix}  →  no album keyword (a:...), skipping`);
-            skipped++;
-            success = true; // Exit retry loop, move to next photo
-            break;
-          }
-
-          if (retryAttempt === 0) {
+            if (EXPORT_USING_DATE_AS_FOLDER_IF_KEYWORD_NOT_AVAILABLE) {
+              albumName = getDateFolder(photo);
+            } else {
+              warn(`${prefix}  →  no album keyword (a:...), skipping`);
+              skipped++;
+              success = true; // Exit retry loop, move to next photo
+              break;
+            }
+          } else if (retryAttempt === 0) {
             info(`${prefix}  →  album: ${albumName}`);
           }
 
