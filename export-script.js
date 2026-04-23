@@ -45,6 +45,16 @@ function warn(msg) { console.log(`[${ts()}]  !  ${msg}`); }
 function fail(msg) { console.log(`[${ts()}]  x  ${msg}`); }
 function sep()     { console.log(`[${ts()}]  ${"─".repeat(55)}`); }
 
+function formatEta(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const r = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${r}s`;
+  return `${r}s`;
+}
+
 // --------------------------------------------------
 // SHELL HELPER
 // --------------------------------------------------
@@ -390,6 +400,7 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
     // Iterates over a snapshot of media items taken at the start so that
     // album membership changes (setExported / markFailed causing items to
     // leave the smart album) cannot push the index out of bounds.
+    const runStartMs = Date.now();
     for (let i = 0; i < total; i++) {
       const photo    = mediaItems[i];
       const filename = photo.filename();
@@ -486,7 +497,12 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
           }
 
           const elapsed = ((Date.now() - startMs) / 1000).toFixed(1);
-          ok(`${prefix}  →  done in ${elapsed}s`);
+          const spentAllSec = (Date.now() - runStartMs) / 1000;
+          const photosSeen = i + 1;
+          const photosLeft = total - photosSeen;
+          const avgPerPhoto = spentAllSec / photosSeen;
+          const etaSec = avgPerPhoto * photosLeft;
+          ok(`${prefix}  →  done in ${elapsed}s  |  ETA ${formatEta(etaSec)}`);
           processed++;
           success = true; // Exit retry loop
 
