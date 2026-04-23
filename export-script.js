@@ -220,6 +220,32 @@ function archiveTempFolders() {
   );
 }
 
+/**
+ * Resolves an album by path, supporting folder traversal.
+ * A plain name like "SYS-NotExported" searches all albums.
+ * A path like "Smart/SYS-NotExported" navigates the folder hierarchy first.
+ */
+function findAlbum(albumPath) {
+  const parts      = albumPath.split("/");
+  const albumName  = parts[parts.length - 1];
+  const folderPath = parts.slice(0, -1);
+
+  if (folderPath.length === 0) {
+    const results = app.albums.whose({ name: albumName });
+    return results.length > 0 ? results[0] : null;
+  }
+
+  let container = app;
+  for (const folderName of folderPath) {
+    const folders = container.folders.whose({ name: folderName });
+    if (!folders || folders.length === 0) return null;
+    container = folders[0];
+  }
+
+  const results = container.albums.whose({ name: albumName });
+  return results.length > 0 ? results[0] : null;
+}
+
 // --------------------------------------------------
 // MAIN
 // --------------------------------------------------
@@ -237,12 +263,11 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
   fail(`  ${DIR_TMP_PROCESSED}`);
   fail("Clean them manually or inspect a previous error archive, then retry.");
 } else {
-  const albums = app.albums.whose({ name: ALBUM_NAME });
-  if (!albums || albums.length === 0) {
+  const theAlbum = findAlbum(ALBUM_NAME);
+  if (!theAlbum) {
     fail(`Album not found: "${ALBUM_NAME}"`);
   } else {
-    const theAlbum = albums[0];
-    const total    = theAlbum.mediaItems().length;
+    const total = theAlbum.mediaItems().length;
     info(`Found ${total} item(s) in album "${ALBUM_NAME}"`);
     sep();
 
