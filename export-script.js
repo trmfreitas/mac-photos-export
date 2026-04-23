@@ -74,18 +74,61 @@ function shell(cmd) {
 // --------------------------------------------------
 
 function isFolderEmpty(dir) {
-  shell(`rm -f ${q(dir)}/.DS_Store`);
+  shell(`rm -f ${q(dir)}/.DS_Store ${q(dir)}/._* 2>/dev/null || true`);
   const result = shell(
-    `find ${q(dir)} -mindepth 1 ! -name '.DS_Store' -print -quit`
+    `find ${q(dir)} -mindepth 1 ! -name '.DS_Store' ! -name '._*' -print -quit`
   );
   return result === "";
+}
+
+function cleanTempJunkFiles() {
+  shell(`rm -f ${q(DIR_TMP_ORIG)}/.DS_Store ${q(DIR_TMP_ORIG)}/._* 2>/dev/null || true`);
+  shell(`rm -f ${q(DIR_TMP_PROCESSED)}/.DS_Store ${q(DIR_TMP_PROCESSED)}/._* 2>/dev/null || true`);
+}
+
+/**
+ * Returns keywords as a plain JS array of strings.
+ * Photos/JXA may return an ObjC collection instead of a native JS array.
+ */
+function getKeywordsArray(photo) {
+  let kws;
+  try {
+    kws = photo.keywords();
+  } catch (_) {
+    return [];
+  }
+
+  if (!kws) return [];
+  if (Array.isArray(kws)) return kws.map(k => String(k));
+
+  try {
+    const unwrapped = ObjC.deepUnwrap(kws);
+    if (Array.isArray(unwrapped)) return unwrapped.map(k => String(k));
+  } catch (_) {
+    // Fall through to manual conversion paths below.
+  }
+
+  if (typeof kws.count === "function" && typeof kws.objectAtIndex === "function") {
+    const out = [];
+    const n = Number(kws.count());
+    for (let i = 0; i < n; i++) out.push(String(kws.objectAtIndex(i)));
+    return out;
+  }
+
+  if (typeof kws.length === "number") {
+    const out = [];
+    for (let i = 0; i < kws.length; i++) out.push(String(kws[i]));
+    return out;
+  }
+
+  return [];
 }
 
 /**
  * Adds the "exportedT" keyword to a photo if not already present.
  */
 function setExported(photo) {
-  const kws = photo.keywords();
+  const kws = getKeywordsArray(photo);
   if (!kws.includes(KEYWORD_EXPORTED)) {
     photo.keywords = kws.concat([KEYWORD_EXPORTED]);
   }
@@ -95,7 +138,7 @@ function setExported(photo) {
  * Adds the "exportFailed" keyword to a photo if not already present.
  */
 function markFailed(photo) {
-  const kws = photo.keywords();
+  const kws = getKeywordsArray(photo);
   if (!kws.includes(KEYWORD_FAILED)) {
     photo.keywords = kws.concat([KEYWORD_FAILED]);
   }
@@ -106,7 +149,7 @@ function markFailed(photo) {
  * or an empty string if no such keyword exists.
  */
 function getAlbumForPhoto(photo) {
-  const kws = photo.keywords();
+  const kws = getKeywordsArray(photo);
   if (!kws || kws.length === 0) return "";
   for (const k of kws) {
     if (k.startsWith("a:")) return k.slice(2);
@@ -148,9 +191,9 @@ function getProcessedFilename(origFilename) {
   const qDir = q(DIR_TMP_PROCESSED);
   let cmd;
   if (origFilename.toUpperCase().endsWith(".HEIC")) {
-    cmd = `find ${qDir} -maxdepth 1 -type f \\( -iname '*.jpg' -o -iname '*.jpeg' \\) -print -quit`;
+    cmd = `find ${qDir} -maxdepth 1 -type f ! -name '.DS_Store' ! -name '._*' \\( -iname '*.jpg' -o -iname '*.jpeg' \\) -print -quit`;
   } else {
-    cmd = `find ${qDir} -maxdepth 1 -type f ! -iname '*.xmp' -print -quit`;
+    cmd = `find ${qDir} -maxdepth 1 -type f ! -name '.DS_Store' ! -name '._*' ! -iname '*.xmp' -print -quit`;
   }
   const resultPath = shell(cmd);
   return resultPath !== "" ? shell(`basename ${q(resultPath)}`) : "";
@@ -351,12 +394,21 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
       const photo    = mediaItems[i];
       const filename = photo.filename();
       const prefix   = `[${i + 1}/${total}] ${filename}`;
+      const kws      = getKeywordsArray(photo);
 
       log(prefix);
 
       // Skip photos tagged with KEYWORD_SKIP
-      if (photo.keywords().includes(KEYWORD_SKIP)) {
+      if (kws.includes(KEYWORD_SKIP)) {
         warn(`${prefix}  →  has "${KEYWORD_SKIP}" tag, skipping`);
+        skipped++;
+        sep();
+        continue;
+      }
+
+      // Skip photos already exported in previous runs
+      if (kws.includes(KEYWORD_EXPORTED)) {
+        info(`${prefix}  →  already marked "${KEYWORD_EXPORTED}", skipping`);
         skipped++;
         sep();
         continue;
@@ -390,6 +442,10 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
             warn(`${prefix}  →  retry ${retryAttempt}/3 — exporting from Photos…`);
           }
           doExport(photo);
+
+          // Finder/network volumes can drop .DS_Store / AppleDouble files in
+          // temp directories; remove them before locating rendered output.
+          cleanTempJunkFiles();
 
           step = "detect processed file";
           const processedFilename = getProcessedFilename(filename);
