@@ -14,6 +14,11 @@ const ALBUM_NAME        = env("ALBUM_NAME")        || "SYS-NotExported";
 const EXIFTOOL          = env("EXIFTOOL")          || "/opt/homebrew/bin/exiftool";
 const KEYWORD_EXPORTED  = env("KEYWORD_EXPORTED")  || "exportedT";
 const KEYWORD_FAILED    = env("KEYWORD_FAILED")    || "exportFailed";
+// Comma-separated list of extensions that can only be exported as originals
+// (no rendered file will be produced). E.g. ".ARW,.RAF"
+const ORIGINALS_ONLY_EXTS = (env("ORIGINALS_ONLY_EXTS") || ".ARW")
+  .split(",")
+  .map(e => e.trim().toUpperCase());
 
 // --------------------------------------------------
 // BOOTSTRAP
@@ -106,6 +111,15 @@ function getAlbumForPhoto(photo) {
 }
 
 /**
+ * Returns true if the filename's extension is in ORIGINALS_ONLY_EXTS.
+ */
+function isOriginalsOnly(filename) {
+  const dot = filename.lastIndexOf(".");
+  const ext = dot !== -1 ? filename.slice(dot).toUpperCase() : "";
+  return ORIGINALS_ONLY_EXTS.includes(ext);
+}
+
+/**
  * Finds the rendered output file inside DIR_TMP_PROCESSED.
  *   - HEIC originals → look for the converted .jpg/.jpeg
  *   - All others     → any non-.xmp file
@@ -132,6 +146,33 @@ function takeXmp(origFilename, processedFilename) {
   const outXmp = q(`${DIR_TMP_PROCESSED}/${origFilename}.xmp`);
   shell(`${EXIFTOOL} -o ${outXmp} -all:all -tagsfromfile ${src}`);
   shell(`rm -f ${src}`);
+}
+
+/**
+ * Like finalize() but for originals-only files: no XMP sidecar is produced.
+ * Moves the original file(s) to the export directory and restores
+ * FileModifyDate directly from the file's own metadata.
+ */
+function finalizeOriginalsOnly(photo, albumName, filename) {
+  const epoch  = shell("date +%s");
+  const outDir = `${DIR_EXPORT}/${albumName}`;
+
+  shell(`mkdir -p ${q(outDir)}`);
+
+  // Move originals with timestamp prefix
+  shell(
+    `for f in ${q(DIR_TMP_ORIG)}/*; do ` +
+    `[ -f "$f" ] && [ "$(basename \"$f\")" != ".DS_Store" ] && ` +
+    `mv -- "$f" ${q(outDir)}/${epoch}_"$(basename \"$f\")"; ` +
+    `done`
+  );
+
+  // Ensure tmp_processed is clean (may be empty, but be safe)
+  shell(`find ${q(DIR_TMP_PROCESSED)} -maxdepth 1 -type f ! -name '.DS_Store' -delete 2>/dev/null || true`);
+
+  // Restore FileModifyDate from the original file's own capture date
+  const outOrig = q(`${outDir}/${epoch}_${filename}`);
+  shell(`${EXIFTOOL} '-FileModifyDate<DateTimeOriginal' ${outOrig} 2>/dev/null || true`);
 }
 
 /**
@@ -325,17 +366,24 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
 
           step = "detect processed file";
           const processedFilename = getProcessedFilename(filename);
-          if (processedFilename === "") {
-            throw new Error("No rendered file found in tmp_processed after export");
+
+          if (processedFilename === "" && isOriginalsOnly(filename)) {
+            step = "move original to export directory";
+            info(`${prefix}  →  originals-only file (${filename.split(".").pop().toUpperCase()}), keeping original…`);
+            finalizeOriginalsOnly(photo, albumName, filename);
+          } else {
+            if (processedFilename === "") {
+              throw new Error("No rendered file found in tmp_processed after export");
+            }
+
+            step = "extract XMP sidecar";
+            info(`${prefix}  →  extracting XMP from ${processedFilename}…`);
+            takeXmp(filename, processedFilename);
+
+            step = "move to export directory";
+            info(`${prefix}  →  moving to export directory…`);
+            finalize(photo, albumName, filename);
           }
-
-          step = "extract XMP sidecar";
-          info(`${prefix}  →  extracting XMP from ${processedFilename}…`);
-          takeXmp(filename, processedFilename);
-
-          step = "move to export directory";
-          info(`${prefix}  →  moving to export directory…`);
-          finalize(photo, albumName, filename);
 
           step = "mark exported";
           setExported(photo);
