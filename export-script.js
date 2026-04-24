@@ -404,7 +404,7 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
     for (let i = 0; i < total; i++) {
       const photo    = mediaItems[i];
       const filename = photo.filename();
-      const prefix   = `[${i + 1}/${total}] ${filename}`;
+      const prefix   = `[${i + 1 - skipped}/${total - skipped}] ${filename}`;
       const kws      = getKeywordsArray(photo);
 
       log(prefix);
@@ -498,8 +498,8 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
 
           const elapsed = ((Date.now() - startMs) / 1000).toFixed(1);
           const spentAllSec = (Date.now() - runStartMs) / 1000;
-          const photosSeen = i + 1;
-          const photosLeft = total - photosSeen;
+          const photosSeen = i + 1 - skipped;
+          const photosLeft = total - photosSeen - skipped;
           const avgPerPhoto = spentAllSec / photosSeen;
           const etaSec = avgPerPhoto * photosLeft;
           ok(`${prefix}  →  done in ${elapsed}s  |  ETA ${formatEta(etaSec)}`);
