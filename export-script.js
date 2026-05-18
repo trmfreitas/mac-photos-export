@@ -226,16 +226,18 @@ function takeXmp(origFilename, processedFilename) {
  * FileModifyDate directly from the file's own metadata.
  */
 function finalizeOriginalsOnly(photo, albumName, filename) {
-  const epoch  = shell("date +%s");
-  const outDir = `${DIR_EXPORT}/${albumName}`;
+  const epoch   = shell("date +%s");
+  const photoId = String(photo.id()).split("/")[0];
+  const prefix  = `${epoch}_${photoId}`;
+  const outDir  = `${DIR_EXPORT}/${albumName}`;
 
   shell(`mkdir -p ${q(outDir)}`);
 
-  // Move originals with timestamp prefix
+  // Move originals with timestamp+photoId prefix
   shell(
     `for f in ${q(DIR_TMP_ORIG)}/*; do ` +
     `[ -f "$f" ] && [ "$(basename \"$f\")" != ".DS_Store" ] && ` +
-    `mv -- "$f" ${q(outDir)}/${epoch}_"$(basename \"$f\")"; ` +
+    `mv -- "$f" ${q(outDir)}/${prefix}_"$(basename \"$f\")"; ` +
     `done`
   );
 
@@ -243,7 +245,7 @@ function finalizeOriginalsOnly(photo, albumName, filename) {
   shell(`find ${q(DIR_TMP_PROCESSED)} -maxdepth 1 -type f ! -name '.DS_Store' -delete 2>/dev/null || true`);
 
   // Restore FileModifyDate from the original file's own capture date
-  const outOrig = q(`${outDir}/${epoch}_${filename}`);
+  const outOrig = q(`${outDir}/${prefix}_${filename}`);
   shell(`${EXIFTOOL} '-FileModifyDate<DateTimeOriginal' ${outOrig} 2>/dev/null || true`);
 }
 
@@ -256,26 +258,28 @@ function finalizeOriginalsOnly(photo, albumName, filename) {
  */
 function finalize(photo, albumName, filename) {
   const epoch   = shell("date +%s");
+  const photoId = String(photo.id()).split("/")[0];
+  const prefix  = `${epoch}_${photoId}`;
   const outDir  = `${DIR_EXPORT}/${albumName}`;
-  const outXmp  = q(`${outDir}/${epoch}_${filename}.xmp`);
-  const outOrig = q(`${outDir}/${epoch}_${filename}`);
+  const outXmp  = q(`${outDir}/${prefix}_${filename}.xmp`);
+  const outOrig = q(`${outDir}/${prefix}_${filename}`);
   const srcXmp  = q(`${DIR_TMP_PROCESSED}/${filename}.xmp`);
 
   // Ensure destination album directory exists
   shell(`mkdir -p ${q(outDir)}`);
 
-  // Rename-and-move each original: prepend epoch timestamp.
+  // Rename-and-move each original: prepend epoch+photoId prefix.
   // Use a for-loop rather than find+exec sh -c so that single-quoted paths
   // (from q()) are never nested inside another sh -c single-quote context,
   // which would break on any path containing spaces or special characters.
   shell(
     `for f in ${q(DIR_TMP_ORIG)}/*; do ` +
-    `[ -f "$f" ] && [ "$(basename "$f")" != ".DS_Store" ] && ` +
-    `mv -- "$f" ${q(outDir)}/${epoch}_"$(basename "$f")"; ` +
+    `[ -f "$f" ] && [ "$(basename \"$f\")" != ".DS_Store" ] && ` +
+    `mv -- "$f" ${q(outDir)}/${prefix}_"$(basename \"$f\")"; ` +
     `done`
   );
 
-  // Move the XMP sidecar to final location with timestamp prefix
+  // Move the XMP sidecar to final location with timestamp+photoId prefix
   shell(`mv ${srcXmp} ${outXmp}`);
 
   // Restore FileModifyDate from original capture date in XMP
