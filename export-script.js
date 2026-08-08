@@ -15,6 +15,8 @@ const EXIFTOOL          = env("EXIFTOOL")          || "/opt/homebrew/bin/exiftoo
 const KEYWORD_EXPORTED  = env("KEYWORD_EXPORTED")  || "exportedT";
 const KEYWORD_FAILED    = env("KEYWORD_FAILED")    || "exportFailed";
 const KEYWORD_SKIP      = env("KEYWORD_SKIP")      || "skipExport";
+// Maximum seconds to wait for Photos to complete a single export (default: 86400 = 24 h)
+const EXPORT_TIMEOUT_SECONDS = parseInt(env("EXPORT_TIMEOUT_SECONDS") || "86400", 10);
 // When enabled ("true"), photos without an a: keyword are exported to year/month folders
 const EXPORT_USING_DATE_AS_FOLDER_IF_KEYWORD_NOT_AVAILABLE =
   (env("EXPORT_USING_DATE_AS_FOLDER_IF_KEYWORD_NOT_AVAILABLE") || "false").toLowerCase() === "true";
@@ -71,8 +73,9 @@ function q(str) {
  * Executes a shell command via osascript's StandardAdditions.
  * Throws on non-zero exit (JXA surfaces this automatically as an Error).
  *
- * NOTE — AppleEvent timeouts: doExport() uses AppleScript with a 3600s
- * timeout block, so export operations won't hit the 2-minute JXA default.
+ * NOTE — AppleEvent timeouts: doExport() uses AppleScript with a configurable
+ * timeout (EXPORT_TIMEOUT_SECONDS, default 86400 s) so large movie exports
+ * won't hit the 2-minute JXA default.
  * Other AppleEvent calls (keywords, etc.) still use the system default.
  */
 function shell(cmd) {
@@ -297,7 +300,7 @@ function doExport(photo) {
   const script = [
     'on run argv',
     '  set photoId to item 1 of argv',
-    '  with timeout of 3600 seconds',
+    `  with timeout of ${EXPORT_TIMEOUT_SECONDS} seconds`,
     '    tell application "Photos"',
     '      try',
     '        set p to first media item whose id is photoId',
@@ -400,7 +403,10 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
       return msg.includes("appleevent timed out") || msg.includes("timeout");
     }
 
-    // Main loop with global retry per photo.
+    // 0 = no retries (one attempt only); increase to allow retries on timeout.
+    const MAX_RETRIES = 0;
+
+    // Main loop with retry support per photo.
     // Iterates over a snapshot of media items taken at the start so that
     // album membership changes (setExported / markFailed causing items to
     // leave the smart album) cannot push the index out of bounds.
@@ -432,7 +438,7 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
       let retryAttempt = 0;
       let success = false;
 
-      while (retryAttempt < 3 && !success) {
+      while (retryAttempt <= MAX_RETRIES && !success) {
         try {
           const startMs   = Date.now();
           let albumName = getAlbumForPhoto(photo);
@@ -454,7 +460,7 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
           if (retryAttempt === 0) {
             info(`${prefix}  →  exporting from Photos…`);
           } else {
-            warn(`${prefix}  →  retry ${retryAttempt}/3 — exporting from Photos…`);
+            warn(`${prefix}  →  retry ${retryAttempt}/${MAX_RETRIES} — exporting from Photos…`);
           }
           doExport(photo);
 
@@ -514,10 +520,10 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
           const errorMsg = e.message || String(e);
           const isTimeout = isAppleEventTimeout(e);
 
-          if (isTimeout && retryAttempt < 2) {
+          if (isTimeout && retryAttempt < MAX_RETRIES) {
             fail(`${prefix}  →  FAILED at [${step}]: ${errorMsg}`);
-            warn(`${prefix}  →  AppleEvent timeout — cleaning temp folders and retrying (${retryAttempt + 1}/3)…`);
-            
+            warn(`${prefix}  →  AppleEvent timeout — cleaning temp folders and retrying (${retryAttempt + 1}/${MAX_RETRIES})…`);
+
             try {
               // Clean temp folders for next attempt
               shell(`find ${q(DIR_TMP_ORIG)} -maxdepth 1 -type f ! -name '.DS_Store' -delete 2>/dev/null || true`);
@@ -533,8 +539,8 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
             retryAttempt++;
           } else {
             // Either not a timeout, or exhausted retries
-            if (isTimeout && retryAttempt >= 2) {
-              fail(`${prefix}  →  FAILED at [${step}]: ${errorMsg} (after 3 attempts)`);
+            if (isTimeout && retryAttempt >= MAX_RETRIES) {
+              fail(`${prefix}  →  FAILED at [${step}]: ${errorMsg} (no retries configured)`);
             } else {
               fail(`${prefix}  →  FAILED at [${step}]: ${errorMsg}`);
             }
