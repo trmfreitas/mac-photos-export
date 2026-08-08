@@ -414,10 +414,11 @@ if (!isFolderEmpty(DIR_TMP_ORIG) || !isFolderEmpty(DIR_TMP_PROCESSED)) {
     for (let i = 0; i < total; i++) {
       const photo    = mediaItems[i];
       const filename = photo.filename();
+      const photoId  = String(photo.id()).split("/")[0];
       const prefix   = `[${i + 1 - skipped}/${total - skipped}] ${filename}`;
       const kws      = getKeywordsArray(photo);
 
-      log(prefix);
+      log(`${prefix}  (id: ${photoId})`);
 
       // Skip photos tagged with KEYWORD_SKIP
       if (kws.includes(KEYWORD_SKIP)) {
